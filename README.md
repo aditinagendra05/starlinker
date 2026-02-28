@@ -108,8 +108,11 @@ In the vacuum of space, light travels at its maximum speed ($c \approx 300{,}000
 
 ```
 star-linker/
-├── app.py          # Main UI and visualization layer
+├── app.py  # Main UI and visualization layer
+└── requirements.txt        
 └── src/
     ├── engine.py   # 3D math and orbital generation
     └── network.py  # Graph logic and pathfinding
+    └── constants.py
+
 ```
