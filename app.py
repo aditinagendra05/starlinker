@@ -1,89 +1,85 @@
 import streamlit as st
 import plotly.graph_objects as go
 import numpy as np
+import random
 from src.engine import lla_to_ecef, generate_walker_delta
 from src.network import SatelliteNetwork
 
-st.set_page_config(layout="wide")
-st.title("🛰️ Star-Linker: Dynamic LEO Mesh Simulator")
+st.set_page_config(page_title="Star-Linker Pro", layout="wide")
 
-# --- 1. Global City Data ---
-CITY_DATA = {
-    "New York (USA)": [40.7128, -74.0060],
-    "Bengaluru (India)": [12.9716, 77.5946],
-    "London (UK)": [51.5074, -0.1278],
-    "Tokyo (Japan)": [35.6762, 139.6503],
-    "Sydney (Australia)": [-33.8688, 151.2093],
-    "Cape Town (South Africa)": [-33.9249, 18.4241]
-}
+if 'broken_sats' not in st.session_state:
+    st.session_state.broken_sats = []
 
-# --- 2. Sidebar Controls ---
-st.sidebar.header("Route Settings")
-source_city = st.sidebar.selectbox("Start Point", list(CITY_DATA.keys()), index=0)
-dest_city = st.sidebar.selectbox("End Point", list(CITY_DATA.keys()), index=1)
+# --- Sidebar UI ---
+st.sidebar.title("🛠️ Mission Control")
+weather = st.sidebar.selectbox("Atmospheric Status", ["Clear", "Cloudy", "Rainy", "Stormy"])
+
+if st.sidebar.button("🐒 Release Chaos Monkey"):
+    # Target 10% of satellites for failure
+    all_sat_ids = [f"Sat_{i}" for i in range(300)] 
+    st.session_state.broken_sats = random.sample(all_sat_ids, 30)
+
+if st.sidebar.button("🔧 Reset Network"):
+    st.session_state.broken_sats = []
+    st.rerun()
 
 st.sidebar.divider()
-st.sidebar.header("Network Density")
-planes = st.sidebar.slider("Orbital Planes", 1, 15, 10)
-sats_per_p = st.sidebar.slider("Sats per Plane", 1, 20, 15)
-time_step = st.sidebar.slider("Move Satellites", 0, 100, 0)
+planes = st.sidebar.slider("Orbital Planes", 1, 15, 12)
+sats_per_p = st.sidebar.slider("Sats per Plane", 1, 25, 20)
+time_step = st.sidebar.slider("Time Offset", 0, 100, 0)
 
-# --- 3. Calculation ---
-# Setup Stations
-stations = {
-    source_city: lla_to_ecef(CITY_DATA[source_city][0], CITY_DATA[source_city][1], 0),
-    dest_city: lla_to_ecef(CITY_DATA[dest_city][0], CITY_DATA[dest_city][1], 0)
+# --- Main App ---
+CITY_DATA = {
+    "New York": [40.71, -74.00], "Bengaluru": [12.97, 77.59], 
+    "London": [51.50, -0.12], "Tokyo": [35.67, 139.65],
+    "Sydney": [-33.86, 151.20], "Cape Town": [-33.92, 18.42]
 }
 
-# Setup Constellation
-sats = generate_walker_delta(planes, sats_per_p, 53, 550, time_step=time_step)
+col1, col2 = st.columns(2)
+src = col1.selectbox("Source City", list(CITY_DATA.keys()), index=0)
+dst = col2.selectbox("Destination City", list(CITY_DATA.keys()), index=1)
 
-# Find Path
-net = SatelliteNetwork(isl_threshold=2200, gs_threshold=2800)
-net.update_topology(sats, stations)
-path = net.get_shortest_path(source_city, dest_city)
+stations = {src: lla_to_ecef(*CITY_DATA[src], 0), dst: lla_to_ecef(*CITY_DATA[dst], 0)}
+sats = generate_walker_delta(planes, sats_per_p, 550, time_step)
 
-# --- 4. Visualization ---
+net = SatelliteNetwork()
+net.update_topology(sats, stations, broken_nodes=st.session_state.broken_sats, weather=weather)
+path = net.get_shortest_path(src, dst)
+
+# --- 3D Visualization ---
 fig = go.Figure()
 
-# Add Earth
+# Earth
 u, v = np.mgrid[0:2*np.pi:30j, 0:np.pi:15j]
-x_e, y_e, z_e = 6371*np.cos(u)*np.sin(v), 6371*np.sin(u)*np.sin(v), 6371*np.cos(v)
-fig.add_trace(go.Surface(x=x_e, y=y_e, z=z_e, opacity=0.1, showscale=False))
+xe, ye, ze = 6371*np.cos(u)*np.sin(v), 6371*np.sin(u)*np.sin(v), 6371*np.cos(v)
+fig.add_trace(go.Surface(x=xe, y=ye, z=ze, opacity=0.1, showscale=False))
 
-# Add Satellites
-sat_coords = np.array(list(sats.values()))
-fig.add_trace(go.Scatter3d(x=sat_coords[:,0], y=sat_coords[:,1], z=sat_coords[:,2], 
-                           mode='markers', marker=dict(size=2, color='white'), name="Sats"))
+# Active Satellites
+active_sats = {k: v for k, v in sats.items() if k not in st.session_state.broken_sats}
+coords = np.array(list(active_sats.values()))
+fig.add_trace(go.Scatter3d(x=coords[:,0], y=coords[:,1], z=coords[:,2], 
+                           mode='markers', marker=dict(size=2, color='gray'), name="Sats"))
 
-# Add Selected Cities
+# SOURCE & DESTINATION NAMES
 for name, pos in stations.items():
-    fig.add_trace(go.Scatter3d(x=[pos[0]], y=[pos[1]], z=[pos[2]], 
-                               mode='markers+text', text=[name], marker=dict(size=8, color='orange')))
+    fig.add_trace(go.Scatter3d(
+        x=[pos[0]], y=[pos[1]], z=[pos[2]], 
+        mode='markers+text', 
+        text=[f"<b>{name}</b>"], 
+        textposition="top center",
+        marker=dict(size=12, color='orange'),
+        name=name
+    ))
 
-# Draw Data Path and PRINT HOPS
+# Routing Path
 if path:
     p_coords = np.array([stations[n] if n in stations else sats[n] for n in path])
     fig.add_trace(go.Scatter3d(x=p_coords[:,0], y=p_coords[:,1], z=p_coords[:,2], 
-                               mode='lines+markers', line=dict(color='lime', width=6), name="Active Path"))
-    
-    st.success(f"✅ Connection Established via {len(path)-2} Hops")
-    
-    # --- PRINTING THE PATH BELOW ---
-    st.subheader("📡 Network Routing Table")
-    
-    # Create a nice visual arrow path
-    hop_string = " ➡️ ".join([f"**{node}**" for node in path])
-    st.markdown(hop_string)
-    
-    # Detail View in a table
-    with st.expander("See Detailed Node Data"):
-        st.write("Each hop represents a laser link transfer:")
-        for i, node in enumerate(path):
-            node_type = "Ground Station" if node in stations else "LEO Satellite"
-            st.text(f"Hop {i}: {node} ({node_type})")
+                               mode='lines+markers', line=dict(color='cyan', width=6), name="Data Link"))
+    st.success(f"Route Found! Atmospheric Latency Penalty: {weather}")
+    st.markdown(" ➡️ ".join([f"**{n}**" for n in path]))
 else:
-    st.error("❌ No Path Found. Increase satellite density to bridge the gap.")
+    st.error("No Path Available. Satellite density too low or too many nodes offline.")
 
-fig.update_layout(template="plotly_dark", scene=dict(aspectmode='data'), height=600)
+fig.update_layout(template="plotly_dark", height=800, scene=dict(aspectmode='data'))
 st.plotly_chart(fig, use_container_width=True)
